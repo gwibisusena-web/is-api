@@ -1,9 +1,10 @@
 from datetime import date, datetime
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from sqlalchemy import Date, DateTime, func
 from sqlalchemy.exc import IntegrityError
 
+from auth import VALID_ROLES, authenticate, create_token, hash_password, verify_password
 from config import Config
 from models import (
     Address,
@@ -16,12 +17,22 @@ from models import (
     Technician,
     Ticket,
     UsageRecord,
+    User,
     db,
 )
 
 app = Flask(__name__)
 app.config.from_object(Config)
 db.init_app(app)
+
+if not app.config.get("JWT_SECRET_KEY"):
+    raise RuntimeError(
+        "JWT_SECRET_KEY belum diset di .env. Buat dengan: "
+        'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+    )
+
+# Semua request lewat guard autentikasi (kecuali endpoint publik).
+app.before_request(authenticate)
 
 # Status invoice. Sesuaikan dengan nilai yang kamu pakai di database.
 STATUS_PAID = "paid"
@@ -39,6 +50,16 @@ def not_found(_):
 @app.errorhandler(405)
 def method_not_allowed(_):
     return jsonify(error="Method tidak diizinkan"), 405
+
+
+@app.errorhandler(401)
+def unauthorized(_):
+    return jsonify(error="Tidak terautentikasi"), 401
+
+
+@app.errorhandler(403)
+def forbidden(_):
+    return jsonify(error="Tidak punya akses"), 403
 
 
 # ---------------------------------------------------------------
@@ -313,6 +334,70 @@ def pay_invoice(id):
 def technician_tickets(id):
     technician = db.get_or_404(Technician, id)
     return jsonify([t.to_dict() for t in technician.tickets])
+
+
+# ---------------------------------------------------------------
+# Autentikasi
+# ---------------------------------------------------------------
+@app.post("/auth/login")
+def auth_login():
+    """Tukar email + password dengan access token."""
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+
+    if not email or not password:
+        return jsonify(error="Field wajib: email, password"), 400
+
+    user = User.query.filter(func.lower(User.email) == email).first()
+
+    # Pesan sengaja sama untuk email tidak ada / password salah / user nonaktif,
+    # supaya tidak membocorkan email mana yang terdaftar.
+    if user is None or not user.is_active or not verify_password(password, user.password_hash):
+        return jsonify(error="Email atau password salah"), 401
+
+    return jsonify(
+        access_token=create_token(user),
+        token_type="Bearer",
+        expires_in=app.config["JWT_EXPIRES_MINUTES"] * 60,
+        user=user.to_dict(),
+    )
+
+
+@app.get("/auth/me")
+def auth_me():
+    """Profil user yang sedang login."""
+    return jsonify(g.user.to_dict())
+
+
+@app.post("/auth/register")
+def auth_register():
+    """Buat akun baru. Hanya admin (sudah dijamin oleh before_request)."""
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    role = (body.get("role") or "viewer").strip().lower()
+
+    if not email or not password:
+        return jsonify(error="Field wajib: email, password"), 400
+    if role not in VALID_ROLES:
+        return jsonify(error=f"Role harus salah satu dari: {', '.join(VALID_ROLES)}"), 400
+    if len(password) < 8:
+        return jsonify(error="Password minimal 8 karakter"), 400
+    if User.query.filter(func.lower(User.email) == email).first():
+        return jsonify(error="Email sudah terdaftar"), 409
+
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        role=role,
+    )
+    try:
+        db.session.add(user)
+        db.session.commit()
+    except IntegrityError as e:
+        return db_error(e)
+    return jsonify(user.to_dict()), 201
 
 
 if __name__ == "__main__":

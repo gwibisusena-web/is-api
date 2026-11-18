@@ -12,9 +12,15 @@ class BaseModel(db.Model):
 
     __abstract__ = True
 
+    # Kolom yang tidak boleh keluar lewat API (to_dict) dan tidak boleh
+    # ditulis lewat POST/PUT/PATCH (writable_columns).
+    HIDDEN_COLUMNS = frozenset()
+
     def to_dict(self):
         result = {}
         for col in self.__table__.columns:
+            if col.name in self.HIDDEN_COLUMNS:
+                continue
             value = getattr(self, col.name)
             if isinstance(value, Decimal):
                 value = float(value)
@@ -25,7 +31,11 @@ class BaseModel(db.Model):
 
     @classmethod
     def writable_columns(cls):
-        return {c.name: c for c in cls.__table__.columns if not c.primary_key}
+        return {
+            c.name: c
+            for c in cls.__table__.columns
+            if not c.primary_key and c.name not in cls.HIDDEN_COLUMNS
+        }
 
 
 class Customer(BaseModel):
@@ -153,6 +163,28 @@ class UsageRecord(BaseModel):
     record_date = db.Column(db.Date, nullable=False)
     download_gb = db.Column(db.Numeric(10, 2), default=0)
     upload_gb = db.Column(db.Numeric(10, 2), default=0)
+
+
+class User(BaseModel):
+    """Akun untuk login API.
+
+    Nama tabel sengaja `app_user`, bukan `user`, karena `USER` adalah kata
+    kunci terpakai (reserved) di PostgreSQL sehingga harus selalu di-quote
+    di SQL mentah.
+    """
+
+    __tablename__ = "app_user"
+
+    # password_hash tidak pernah dikirim ke klien dan tidak bisa ditulis
+    # langsung lewat API (hanya lewat hash_password()).
+    HIDDEN_COLUMNS = frozenset({"password_hash"})
+
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(150), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default="viewer")  # "admin" | "viewer"
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.now)
 
 
 # ---------------------------------------------------------------
