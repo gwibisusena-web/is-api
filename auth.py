@@ -9,6 +9,7 @@
 """
 
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 import jwt
 from flask import current_app, g, jsonify, request
@@ -23,6 +24,17 @@ PUBLIC_ENDPOINTS = frozenset({"auth_login", "static"})
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 VALID_ROLES = ("admin", "viewer")
+
+
+def admin_required(view):
+    """Batasi endpoint hanya untuk role admin (guard utama hanya cek method)."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = getattr(g, "user", None)
+        if user is None or user.role != "admin":
+            return jsonify(error="Hanya admin yang boleh mengakses log"), 403
+        return view(*args, **kwargs)
+    return wrapped
 
 
 # ---------------------------------------------------------------

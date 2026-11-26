@@ -187,6 +187,42 @@ class User(BaseModel):
     created_at = db.Column(db.DateTime, default=datetime.now)
 
 
+class ApiLog(BaseModel):
+    """Audit log setiap request API.
+
+    Berbeda dengan tabel bisnis lain, `id` memakai SERIAL bawaan DB
+    (seperti app_user) karena log ditulis pada hampir setiap request;
+    alokasi MAX(id) + advisory lock akan menjadi bottleneck.
+    """
+
+    __tablename__ = "api_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    request_id = db.Column(db.String(36), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now, index=True)
+    method = db.Column(db.String(10), nullable=False)
+    path = db.Column(db.String(500), nullable=False)
+    endpoint = db.Column(db.String(100))
+    query_params = db.Column(db.Text)
+    status_code = db.Column(db.Integer, nullable=False, index=True)
+    level = db.Column(db.String(10), nullable=False, default="INFO")
+    duration_ms = db.Column(db.Integer, nullable=False, default=0)
+    # User sengaja tidak pakai ForeignKey: log harus tetap terbaca
+    # walaupun akun dihapus.
+    user_id = db.Column(db.Integer, index=True)
+    user_email = db.Column(db.String(150))
+    user_role = db.Column(db.String(20))
+    ip_address = db.Column(db.String(45))
+    user_agent = db.Column(db.String(500))
+    request_body = db.Column(db.Text)
+    response_body = db.Column(db.Text)
+    error_message = db.Column(db.Text)
+
+    __table_args__ = (
+        db.Index("ix_api_log_created_status", "created_at", "status_code"),
+    )
+
+
 # ---------------------------------------------------------------
 # Alokasi id di sisi aplikasi
 # ---------------------------------------------------------------

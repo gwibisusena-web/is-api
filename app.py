@@ -3,11 +3,21 @@ from datetime import date, datetime
 from flask import Flask, g, jsonify, request
 from sqlalchemy import Date, DateTime, func
 from sqlalchemy.exc import IntegrityError
+from werkzeug.exceptions import HTTPException
 
-from auth import VALID_ROLES, authenticate, create_token, hash_password, verify_password
+from api_logger import finish_request, start_request
+from auth import (
+    VALID_ROLES,
+    admin_required,
+    authenticate,
+    create_token,
+    hash_password,
+    verify_password,
+)
 from config import Config
 from models import (
     Address,
+    ApiLog,
     Customer,
     Device,
     Invoice,
@@ -31,8 +41,14 @@ if not app.config.get("JWT_SECRET_KEY"):
         'python -c "import secrets; print(secrets.token_urlsafe(48))"'
     )
 
+# Timer log dimulai lebih dulu agar request yang ditolak authenticate tetap tercatat.
+app.before_request(start_request)
+
 # Semua request lewat guard autentikasi (kecuali endpoint publik).
 app.before_request(authenticate)
+
+# Tulis audit log setelah respons siap (termasuk respons error).
+app.after_request(finish_request)
 
 # Status invoice. Sesuaikan dengan nilai yang kamu pakai di database.
 STATUS_PAID = "paid"
@@ -60,6 +76,15 @@ def unauthorized(_):
 @app.errorhandler(403)
 def forbidden(_):
     return jsonify(error="Tidak punya akses"), 403
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Semua exception tak tertangani jadi JSON 500 dan tercatat di api_log."""
+    if isinstance(e, HTTPException):
+        return jsonify(error=e.description), e.code
+    g.log_error_message = f"{type(e).__name__}: {e}"
+    return jsonify(error="Terjadi kesalahan pada server"), 500
 
 
 # ---------------------------------------------------------------
@@ -334,6 +359,46 @@ def pay_invoice(id):
 def technician_tickets(id):
     technician = db.get_or_404(Technician, id)
     return jsonify([t.to_dict() for t in technician.tickets])
+
+
+# ---------------------------------------------------------------
+# Audit log (hanya admin)
+# ---------------------------------------------------------------
+@app.get("/api-logs")
+@admin_required
+def api_logs_list():
+    """Log terbaru. Filter opsional: status, user_id, start, end, limit."""
+    query = ApiLog.query
+
+    status = request.args.get("status", type=int)
+    if status is not None:
+        query = query.filter(ApiLog.status_code == status)
+
+    user_id = request.args.get("user_id", type=int)
+    if user_id is not None:
+        query = query.filter(ApiLog.user_id == user_id)
+
+    try:
+        if request.args.get("start"):
+            query = query.filter(ApiLog.created_at >= datetime.fromisoformat(request.args["start"]))
+        if request.args.get("end"):
+            query = query.filter(ApiLog.created_at <= datetime.fromisoformat(request.args["end"]))
+    except ValueError:
+        return jsonify(error="Format start/end harus ISO (YYYY-MM-DD atau datetime ISO)"), 400
+
+    limit = request.args.get("limit", default=100, type=int)
+    if limit is None or limit < 1:
+        return jsonify(error="limit harus berupa angka >= 1"), 400
+    limit = min(limit, 1000)
+
+    items = query.order_by(ApiLog.id.desc()).limit(limit).all()
+    return jsonify([i.to_dict() for i in items])
+
+
+@app.get("/api-logs/<int:id>")
+@admin_required
+def api_logs_get(id):
+    return jsonify(db.get_or_404(ApiLog, id).to_dict())
 
 
 # ---------------------------------------------------------------

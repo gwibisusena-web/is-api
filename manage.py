@@ -7,17 +7,19 @@ Contoh pemakaian:
     python manage.py list-users
     python manage.py set-role viewer@isp.local admin
     python manage.py set-active viewer@isp.local false
+    python manage.py cleanup-logs --days 30
 """
 
 import argparse
 import getpass
 import sys
+from datetime import datetime, timedelta
 
 from sqlalchemy import func
 
 from app import app
 from auth import VALID_ROLES, hash_password
-from models import User, db
+from models import ApiLog, User, db
 
 
 def _find_user(email):
@@ -112,6 +114,21 @@ def cmd_set_password(args):
     return 0
 
 
+def cmd_cleanup_logs(args):
+    """Hapus log yang lebih lama dari N hari."""
+    if args.days < 1:
+        print("GAGAL: --days harus >= 1.")
+        return 1
+    cutoff = datetime.now() - timedelta(days=args.days)
+    with app.app_context():
+        deleted = ApiLog.query.filter(ApiLog.created_at < cutoff).delete(
+            synchronize_session=False
+        )
+        db.session.commit()
+    print(f"OK: {deleted} baris api_log lebih lama dari {args.days} hari dihapus.")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Administrasi API")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -142,6 +159,10 @@ def main(argv=None):
     p.add_argument("email")
     p.add_argument("--password", help="kalau kosong, diminta secara interaktif")
     p.set_defaults(func=cmd_set_password)
+
+    p = sub.add_parser("cleanup-logs", help="hapus audit log lama")
+    p.add_argument("--days", type=int, default=30, help="umur log dalam hari (default: 30)")
+    p.set_defaults(func=cmd_cleanup_logs)
 
     args = parser.parse_args(argv)
     return args.func(args)
